@@ -1,7 +1,10 @@
+import asyncio
+import json
 from .config import llm, llm_with_tools
 from .state import AgentState
 from .tools import query_order_db, rag_query_product
 from langchain_core.messages import ToolMessage
+from .mcp_client import load_mcp_tools
 
 # 1. 意图识别节点
 def classify_intent(state: AgentState):
@@ -35,7 +38,7 @@ def route_by_intent(state: AgentState):
     elif intent == "product": return "handle_product"
     else: return "handle_unknown"
 
-# 3. 订单处理节点（大模型自主决定是否调用订单数据库工具）
+# 3. 订单处理节点
 def handle_order(state: AgentState):
     print("【节点执行】: 进入订单处理节点，交由大模型自主决策...")
     
@@ -58,12 +61,11 @@ def handle_order(state: AgentState):
         print("【大模型决策】: 不需要调用工具，直接回复。")
         return {"answer": response.content, "messages": [response]}
 
-# 4. 商品处理节点（大模型自主决定是否调用 RAG 向量检索工具）
+# 4. 商品处理节点（RAG 检索）
 def handle_product(state: AgentState):
     print("【节点执行】: 进入商品处理节点，交由大模型自主决策（RAG检索）...")
     
     messages = [
-        # 注意：这里的 System Prompt 已经优化，不再纠结型号，直接去检索
         ("system", "你是一个电商客服。如果用户要查询商品信息、优惠活动、售后规则或清洗保养方法，请立即调用 rag_query_product 工具，把用户的完整问题作为检索词。只有当用户完全没有提到任何商品名称（例如只说‘怎么洗’、‘有什么优惠’）时，才回复请求补充信息。不要纠结于具体的型号，直接用通用关键词去检索。"),
         ("user", state["user_input"])
     ]
@@ -82,10 +84,55 @@ def handle_product(state: AgentState):
         print("【大模型决策】: 不需要调用工具，直接回复。")
         return {"answer": response.content, "messages": [response]}
 
-# 5. 退款处理节点（暂用模拟回复占位）
+# 5. 退款/工单处理节点（集成 MCP 工单服务）
 def handle_refund(state: AgentState):
-    print("【节点执行】: 正在进入退款/工单节点...")
-    return {"answer": "已进入售后系统，正在为你生成退款工单..."}
+    print("【节点执行】: 进入退款/工单节点（MCP对接）...")
+    user_input = state["user_input"]
+
+    # 1. 让大模型提取订单号和退换货原因
+    prompt = f"""请从用户的输入中提取订单号（纯数字）和退换货原因，以JSON格式返回。
+例如：{{"order_id": "123456", "reason": "尺码不合适"}}
+如果缺少订单号或原因，对应字段的值设为 null。只输出 JSON 字符串，不要输出任何其他解释。
+用户输入：{user_input}
+"""
+    response = llm.invoke(prompt).content.strip()
+    
+    # 清理可能存在的 Markdown 代码块标记
+    if response.startswith("```json"):
+        response = response.replace("```json", "").replace("```", "").strip()
+    
+    try:
+        data = json.loads(response)
+    except Exception as e:
+        print(f"【解析失败】: {e}，原始输出：{response}")
+        return {"answer": "抱歉，我没能理解您的退换货诉求，请提供订单号和具体原因。"}
+
+    order_id = data.get("order_id")
+    reason = data.get("reason")
+
+    if not order_id or not reason:
+        print("【节点执行】: 信息缺失，需要主动追问...")
+        return {"answer": "您好，创建退换货工单需要提供订单号和退换货原因，请问能补充一下吗？"}
+
+    # 2. 通过 MCP 加载工具并调用
+    print(f"【节点执行】: 正在通过 MCP 协议创建工单，订单号: {order_id}，原因: {reason}")
+    
+    async def call_mcp():
+        try:
+            tools = await load_mcp_tools()
+            # 寻找 create_refund_ticket 工具
+            for t in tools:
+                if t.name == "create_refund_ticket":
+                    return await t.ainvoke({"order_id": order_id, "reason": reason})
+            return "未找到可用的工单创建工具"
+        except Exception as e:
+            return f"调用 MCP 工单服务失败: {str(e)}"
+
+    result = asyncio.run(call_mcp())
+    print(f"【MCP工单执行结果】: {result}")
+
+    # 3. 返回结果
+    return {"answer": result, "messages": []}
 
 # 6. 兜底回复节点
 def handle_unknown(state: AgentState):

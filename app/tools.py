@@ -12,10 +12,11 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 print("正在加载本地向量模型和 Chroma 数据库...")
 embeddings = HuggingFaceEmbeddings(
     model_name="BAAI/bge-small-zh-v1.5",
-    model_kwargs={'local_files_only': True}  # 强制只用本地已下好的模型，不连网
+    model_kwargs={'local_files_only': True}
 )
 vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
 
+# 1. 定义订单查询工具
 @tool
 def query_order_db(order_id: str) -> str:
     """
@@ -34,6 +35,7 @@ def query_order_db(order_id: str) -> str:
     else:
         return "未找到该订单号，请核对后重试。"
 
+# 2. 定义 RAG 知识库检索工具
 @tool
 def rag_query_product(query: str) -> str:
     """
@@ -49,4 +51,5 @@ def rag_query_product(query: str) -> str:
     results = "\n\n".join([doc.page_content for doc in docs])
     return f"从知识库检索到以下内容：\n{results}"
 
+# 3. 把所有工具放进列表（工单工具将通过 MCP 动态加载，不写在这里）
 tools = [query_order_db, rag_query_product]
