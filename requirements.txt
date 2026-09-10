@@ -1,0 +1,4 @@
+# 核心依赖（版本与当前 .venv 一致）
+python-dotenv==1.2.3
+langchain-openai==1.6.2
+langgraph==1.2.11

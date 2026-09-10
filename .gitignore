@@ -1,0 +1,16 @@
+# 敏感文件：API Key 不入库
+.env
+
+# Python 虚拟环境
+.venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# IDE 配置
+.vscode/
+.idea/
+
+chroma_db/
+orders.db
